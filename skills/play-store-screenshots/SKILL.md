@@ -128,6 +128,8 @@ After the user confirms the summary in Step 3, proceed to generate `config.js` a
 | Slide count | Default 5 → state in summary, user can override |
 | Tablet / locale / landscape | Default off/en/portrait → never ask, only activate if user raises it |
 
+**When the user asks for localized sets** (e.g. "make the other locales" after an English set exists): don't re-ask the discovery questions. Reuse the existing English slides as the source, translate into the `COPY` table (see [Localized Sets](#localized-sets)) and render every locale. If the project has a locale-guidance doc (which markets to translate, keep in English or make bilingual), follow it and tell the user where it differed from a literal "translate everything". Never re-render or overwrite an English set the user has already approved.
+
 ---
 
 ## Project Architecture
@@ -138,6 +140,7 @@ This skill generates **two files** in a new folder. No framework, no `npm instal
 play-store-screenshots/
 ├── index.html      ← rendering engine, export logic, overview mode (don't edit)
 ├── config.js       ← ALL customization: copy, colors, slides (edit this)
+├── render-locales.sh  ← optional: headless render of every locale (copy from this skill)
 └── screenshots/    ← user's raw Android app screenshots + app icon
     ├── app-icon.png
     ├── screen1.png
@@ -240,18 +243,46 @@ const config = {
 
 ### Multi-locale copy
 
-When `locales` contains more than one entry, change string values to locale maps:
+Any string field (and `screenshot`) may be a locale map `{ en: "...", de: "..." }`. The renderer resolves it with a fallback to the first (English) value, so a locale only needs the entries that differ:
 
 ```javascript
-slides: [
-  {
-    id: "hero",
-    layout: "text-top",
-    screenshot: { en: "screenshots/en/screen1.png", de: "screenshots/de/screen1.png" },
-    label: { en: "INTRODUCING", de: "NEU" },
-    headline: { en: "Your app.\nYour way.", de: "Deine App.\nDein Weg." },
+const localVal = (v) =>
+  (v && typeof v === "object") ? (v[LOCALE] || Object.values(v)[0]) : (v || "");
+```
+
+With more than two or three locales, don't hand-write maps on every field. Keep all copy in one `COPY` table at the top of `config.js` (one row per slide: `[label, headline, subtext]`; `fg` row: `[headline, subtext]`) and build the maps from it. Translators and reviewers then read one locale as one block:
+
+```javascript
+const COPY = {
+  en: {
+    "hero":  ["INTRODUCING", "Your app.\nYour way.", ""],
+    "focus": ["FOCUS MODE", "Less noise.\nMore focus.", "Silence everything for 25 minutes."],
+    fg:      ["The app that keeps you focused", "Available on Google Play"],
   },
-]
+  de: {
+    "hero":  ["NEU", "Deine App.\nDein Weg.", ""],
+    "focus": ["FOKUSMODUS", "Weniger Lärm.\nMehr Fokus.", "25 Minuten lang alles stumm."],
+    fg:      ["Die App, die dich fokussiert hält", "Jetzt bei Google Play"],
+  },
+  hi: {},   // empty → every slide falls back to en
+};
+
+// Helper names must not clash with globals in index.html (e.g. a colour shorthand `S`).
+const copyMap = (id, i) => Object.fromEntries(
+  Object.entries(COPY).filter(([, c]) => c[id]).map(([loc, c]) => [loc, c[id][i]])
+);
+const slideOf = (id, base) => ({ id, ...base,
+  label: copyMap(id, 0), headline: copyMap(id, 1), subtext: copyMap(id, 2) });
+
+const config = {
+  // ...
+  slides: [
+    slideOf("hero",  { layout: "text-top", screenshot: "screenshots/screen1.png" }),
+    slideOf("focus", { layout: "text-top", screenshot: "screenshots/screen2.png" }),
+  ],
+  featureGraphic: { headline: copyMap("fg", 0), subtext: copyMap("fg", 1), style: "gradient" },
+  locales: ["en", "de", "hi"],
+};
 ```
 
 ---
@@ -547,7 +578,9 @@ A radial glow placed between the background and the phone makes the device feel 
 
 Do not add glow on light backgrounds — it reads as a muddy stain.
 
-### Noise texture overlay (optional, high-end finish)
+### Noise texture overlay (optional — breaks html-to-image export)
+
+> **Skip this by default.** The SVG below uses an internal `filter='url(#n)'` reference. When `html-to-image` serializes the slide into an SVG and loads it as an `<img>`, that reference can't resolve, the browser fires an image error and the export crashes. At 3–4% opacity the difference is imperceptible. Only use it if you capture with headless Chrome screenshots instead of `html-to-image` (see [Localized Sets](#localized-sets)).
 
 A subtle SVG noise texture makes gradients feel less flat and more printed. Keep opacity very low:
 
@@ -794,15 +827,19 @@ Then create `config.js` (AI fills this in) and `index.html` (AI generates this).
 
 ### index.html structure
 
-The `<head>` loads everything via CDN — no local dependencies:
+The `<head>` loads the libraries via CDN. Fonts are **local files** declared with an inline `@font-face` — see [Export-safe fonts and images](#export-safe-fonts-and-images) for why a Google Fonts `<link>` breaks export:
 
 ```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <!-- Google Fonts — match user's preference, default to Inter -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <!-- Local font files (TTF/WOFF2 downloaded into ./fonts/ or from the app's own font folder) -->
+  <style>
+    @font-face { font-family: 'Inter'; src: url('fonts/Inter-Regular.ttf') format('truetype'); font-weight: 400; }
+    @font-face { font-family: 'Inter'; src: url('fonts/Inter-Bold.ttf')    format('truetype'); font-weight: 700; }
+    @font-face { font-family: 'Inter'; src: url('fonts/Inter-ExtraBold.ttf') format('truetype'); font-weight: 800; }
+  </style>
   <!-- html-to-image for PNG export -->
   <script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
   <!-- JSZip + FileSaver — bundle all exports into a single ZIP download -->
@@ -836,7 +873,7 @@ The `<head>` loads everything via CDN — no local dependencies:
 
 ### Typography
 
-Load the font via the `<link>` tag above. Good defaults: **Inter**, **Plus Jakarta Sans**, **DM Sans**. Match the user's preference if they specified one.
+Load the font via the local `@font-face` above. Good defaults: **Inter**, **Plus Jakarta Sans**, **DM Sans**. Match the user's preference if they specified one — if the Android project ships its own fonts (`res/font/`, an assets folder), use those files directly.
 
 Scale all font sizes relative to canvas width — never hardcode `px` values in slide rendering:
 
@@ -854,6 +891,26 @@ function typography(W) {
 ```
 
 This ensures text renders correctly at all export resolutions without changes.
+
+### Export-safe fonts and images
+
+`html-to-image` re-fetches every image and font it finds. Served from `python3 -m http.server` (no CORS headers), those fetches fail and the export breaks. Make every asset already-embedded before the slides are built:
+
+1. **No Google Fonts `<link>`.** Reading `cssRules` from a cross-origin stylesheet throws `SecurityError: Cannot access rules`. Use local `@font-face` files.
+2. **Preload images as base64.** At load, `fetch()` the icon and every screenshot, convert each to a data URL (`FileReader.readAsDataURL`) into an `imageCache`, and render `<img src="${imageCache[path]}">`. `html-to-image` skips data URLs.
+3. **Preload fonts as base64 and pass `fontEmbedCSS`.** Fetch each font file the same way, build one string of `@font-face{font-family:'Inter';src:url('data:font/ttf;base64,...')format('truetype');font-weight:700;}` rules, and pass it to every `htmlToImage.toPng(el, { pixelRatio: 1, fontEmbedCSS })` call so it never fetches fonts itself.
+
+Startup order:
+
+```javascript
+window.addEventListener("load", async () => {
+  await document.fonts.ready;                       // fonts painted before first render
+  await Promise.all([preloadImages(), preloadFonts()]);
+  render();                                         // grid + off-screen export canvases
+});
+```
+
+The page must be served from a folder where all asset paths resolve. Keep paths in `config.js` relative to the generator folder (`screenshots/...`, `fonts/...`) and serve that folder. If assets are referenced absolutely (`/Resources/...`), serve from the directory that makes those resolve and say so in the run instructions.
 
 ### Rendering headline newlines
 
@@ -1047,11 +1104,13 @@ async function captureSlide(element) {
   element.style.position = "fixed";
   element.style.zIndex   = "9999";
 
+  const opts = { pixelRatio: 1, fontEmbedCSS };   // see "Export-safe fonts and images"
+
   // First call: warms up fonts and images — result discarded
-  await htmlToImage.toPng(element, { pixelRatio: 1 });
+  await htmlToImage.toPng(element, opts);
 
   // Second call: clean, correct output
-  const dataUrl = await htmlToImage.toPng(element, { pixelRatio: 1 });
+  const dataUrl = await htmlToImage.toPng(element, opts);
 
   // Restore to off-screen position
   element.style.left     = "-9999px";
@@ -1077,7 +1136,8 @@ exports/phone/en/
 └── 05-cta-1080x1920.png
 
 exports/feature-graphic/
-└── feature-graphic-1024x500.png
+├── feature-graphic-1024x500.png        ← en (default listing)
+└── de/feature-graphic-1024x500.png     ← one folder per extra locale
 ```
 
 ### Bulk export as ZIP
@@ -1092,10 +1152,11 @@ async function captureSlide(element) {
   element.style.position = "fixed";
   element.style.zIndex   = "9999";
 
+  const opts = { pixelRatio: 1, fontEmbedCSS };
   // First call: warms up lazy-loaded fonts and images — result discarded
-  await htmlToImage.toPng(element, { pixelRatio: 1 });
+  await htmlToImage.toPng(element, opts);
   // Second call: clean, correct output
-  const dataUrl = await htmlToImage.toPng(element, { pixelRatio: 1 });
+  const dataUrl = await htmlToImage.toPng(element, opts);
 
   element.style.left     = "-9999px";
   element.style.top      = "0px";
@@ -1127,7 +1188,9 @@ async function exportAll() {
     const fg = document.getElementById(`canvas-${locale}-feature-graphic`);
     if (fg) {
       const dataUrl = await captureSlide(fg);
-      fgFolder.file(`feature-graphic-${FG_W}x${FG_H}.png`, dataUrl.split(",")[1], { base64: true });
+      // en at the root, other locales in their own folder — otherwise each locale overwrites the last
+      (locale === "en" ? fgFolder : fgFolder.folder(locale))
+        .file(`feature-graphic-${FG_W}x${FG_H}.png`, dataUrl.split(",")[1], { base64: true });
     }
 
     // Tablet slides (if enabled)
@@ -1182,7 +1245,101 @@ const isRtl = RTL_LOCALES.has(selectedLocale);
 // without needing manual position overrides.
 ```
 
-When `config.locales` contains multiple entries, build a locale `<select>` in the controls bar. On change, re-render all preview slides in the selected language.
+When `config.locales` contains multiple entries, build a locale `<select>` in the controls bar. Read the active locale from the URL (`?locale=de`, default `config.locales[0]`) and have the select reload with the new parameter, so any locale is directly linkable.
+
+---
+
+## Localized Sets
+
+### Writing the copy
+
+- **Start from the approved English set.** Same slides, same order, same idea per slide; only the words change. Don't add new claims (sizes, prices, "offline") that the screenshots don't show.
+- **Adapt, don't transliterate.** Apply the same headline formulas in the target language. Japanese and Korean reward an understated, native tone over a literal translation (`"See every beat drop."` → `「ビートが、見える。」`).
+- **Shorten, never shrink.** German, French and Russian run 25–40% longer. Rewrite to fit 2 lines rather than lowering the font size.
+- **Labels stay all caps where the script has case**; write them already uppercased in `COPY` (CSS uppercasing is locale-sensitive — see below).
+- Translate the feature graphic and its subtext too (`"Jetzt bei Google Play"`, `"Disponible en Google Play"`, `"Google Play で配信中"`).
+- Locales the user wants kept in English get an empty `COPY` entry (`hi: {}`); bilingual sets fill only the slides that change.
+
+### Fonts per script
+
+Display fonts rarely cover every script. Check coverage before rendering (e.g. `fontTools`: `TTFont(path).getBestCmap()` against the characters you use) and give each locale its own stack. Use whole-font substitution, not per-glyph fallback: a Latin font that lacks a few Vietnamese letters mixes two typefaces inside one word.
+
+```javascript
+const DEFAULT_FONTS = { head: "'Inter',sans-serif", body: "'Inter',sans-serif", weight: 800, track: "0.13em" };
+const LOCALE_FONTS = {
+  ja:      { head: "'Inter','Noto Sans CJK JP',sans-serif", body: "'Inter','Noto Sans CJK JP',sans-serif", weight: 700 },
+  ko:      { head: "'Inter','Noto Sans CJK KR',sans-serif", body: "'Inter','Noto Sans CJK KR',sans-serif", weight: 700 },
+  "zh-CN": { head: "'Inter','Noto Sans CJK SC',sans-serif", body: "'Inter','Noto Sans CJK SC',sans-serif", weight: 700 },
+  th:      { head: "'Inter','Noto Sans Thai',sans-serif",   body: "'Inter','Noto Sans Thai',sans-serif",   weight: 700, track: "0.04em" },
+  // e.g. ru: { head: "'Jost',sans-serif", ... } when the display font has no Cyrillic
+};
+const LF = { ...DEFAULT_FONTS, ...(LOCALE_FONTS[LOCALE] || {}) };
+```
+
+- CJK, Thai, Sinhala and Devanagari faces look heavy at 800 — use 700.
+- Wide label tracking (`0.13em`) breaks up Thai and Sinhala clusters — use ~`0.04em`.
+- Keep the English locale's stacks exactly as they were, so re-rendering never shifts the approved set.
+
+### Locale-aware rendering details
+
+- **Set `lang` on each slide root** (`zh-Hans` for `zh-CN`). It picks the right CJK glyph variants and makes `text-transform: uppercase` locale-correct (Turkish `i` → `İ`).
+- **Pin the brand name to `lang="en"`.** Otherwise Turkish uppercasing turns "NeoMusic" into "NEOMUSİC".
+- **Balance subtext wrapping** for translated locales (`text-wrap: balance`) so a long translation doesn't leave a one-word orphan line. Leave the English styling untouched.
+- French uses a no-break space before `? ! : ;` (`"Grand soleil\u00A0?"`).
+- RTL locales: see the `dir` handling above.
+
+### Headless rendering (recommended for 3+ locales)
+
+Clicking Export per locale in a browser doesn't scale. Add a single-canvas mode to `index.html` and capture with headless Chrome:
+
+```javascript
+const PARAMS = new URLSearchParams(location.search);
+const LOCALE = PARAMS.get("locale") || config.locales[0] || "en";
+const RENDER = PARAMS.get("render");   // "<slide id>" | "feature-graphic"
+
+async function renderSingle() {
+  document.getElementById("topbar").remove();
+  document.getElementById("slide-grid").remove();
+  document.body.style.cssText = "margin:0;overflow:hidden;background:#000;";
+  const host = document.getElementById("export-canvases");
+  host.style.cssText = "position:fixed;left:0;top:0;z-index:1;";
+  // fonts.ready alone can resolve before a lazily used face starts loading → fallback font in the PNG
+  await Promise.all(["400 40px Inter", "800 40px Inter"].map(f => document.fonts.load(f).catch(() => {})));
+  host.innerHTML = RENDER === "feature-graphic"
+    ? buildFeatureGraphicHTML(FG_W, FG_H)
+    : buildSlideHTML(config.slides.find(s => s.id === RENDER), PHONE_W, PHONE_H);
+  await Promise.all([...host.querySelectorAll("img")].map(i => i.decode().catch(() => {})));
+  await document.fonts.ready;
+}
+
+window.addEventListener("load", async () => {
+  await document.fonts.ready;
+  if (RENDER) return renderSingle();   // no base64 preloading needed for screenshots
+  // ...normal grid startup
+});
+```
+
+Then copy [`render-locales.sh`](./render-locales.sh) from this skill next to `index.html` and run it:
+
+```bash
+bash render-locales.sh             # every locale in config.locales except en
+bash render-locales.sh ja ko       # only these
+```
+
+It serves the folder, screenshots each slide at 1080×1920 and the feature graphic at 1024×500 with `--force-device-scale-factor=1`, flattens them to RGB (Play rejects alpha), and writes `exports/phone/<locale>/` and `exports/feature-graphic/<locale>/`. Because system fonts render directly here, the Noto fallbacks don't need to be base64-embedded.
+
+**Before trusting it,** render the English set once and diff it against the browser export (e.g. Pillow `ImageChops.difference`). They should match visually; if they don't, fix the render mode before producing other locales.
+
+### Localization QA
+
+Build a contact sheet per locale (top ~36% of each slide + the feature graphic) and look at every one:
+
+- [ ] No headline in a fallback font (a different face on one slide means a font-load race)
+- [ ] No missing-glyph boxes, clipped Thai/Vietnamese marks, or mixed typefaces inside a word
+- [ ] Every headline stays within 2 lines and the text block; no subtext orphans
+- [ ] Brand name unchanged in every locale
+- [ ] Feature graphic headline ≤ 3 lines
+- [ ] The English set is byte-for-byte unchanged (checksum before and after)
 
 ---
 
@@ -1218,6 +1375,8 @@ Check all of these before exporting final assets.
 - [ ] The double-call export pattern was used (skipping it causes blurry fonts)
 - [ ] Filenames are zero-padded (`01-`, `02-`, not `1-`, `2-`)
 
+**Localized sets** — see [Localization QA](#localization-qa)
+
 ---
 
 ## After Export: Uploading to Play Console
@@ -1226,6 +1385,7 @@ Check all of these before exporting final assets.
 2. Under **Phone screenshots**, upload the files from `exports/phone/en/` in order
 3. Under **Feature graphic**, upload `feature-graphic-1024x500.png`
 4. If tablet screenshots were generated, upload them under the corresponding tablet section
-5. Save and submit for review
+5. For each translated listing language, switch the language in the listing and upload `exports/phone/<locale>/` and `exports/feature-graphic/<locale>/`. A language without its own set shows the default (English) screenshots.
+6. Save and submit for review
 
 Play Store processes uploads instantly — no waiting for asset approval before you can submit a release.
