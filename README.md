@@ -42,7 +42,7 @@ Upload to Play Console  →
 | Phone screenshots | 1080 × 1920px | 2–8 slides, text-top layout |
 | Feature Graphic | 1024 × 500px | Required by Play Store |
 | Tablet screenshots | 1200×1920 / 1600×2560px | Optional |
-| Localized sets | Per-language exports | Optional, RTL-aware |
+| Localized sets | Per-language exports | Optional — translated copy, per-script fonts, RTL-aware |
 
 ---
 
@@ -106,6 +106,12 @@ Text at the top, large phone below, bottom naturally cropped for depth. Every sl
 
 **Feature Graphic as a first-class asset.**
 Play Store requires a 1024×500 landscape banner that most tools ignore. This skill generates it properly alongside your slides.
+
+**Localized sets in one pass.**
+Once the English set is approved, ask for other languages. The AI translates the captions into a single copy table (adapting tone per market, shortening long languages instead of shrinking the font), picks a font that covers each script (CJK, Thai, Cyrillic, Vietnamese…), and renders every locale headlessly with the bundled `render-locales.sh`, leaving the English set untouched.
+
+**Exports that actually work from a local server.**
+Images and fonts are embedded as base64 before capture, so `html-to-image` never hits CORS errors on `python3 -m http.server`.
 
 **CSS-only Android mockup.**
 No PNG device frame that goes stale. Pure CSS with correct proportions, punch-hole camera, and side buttons. Matches black, white, or silver.
